@@ -6,94 +6,72 @@ from fastapi import FastAPI, Request
 
 app = FastAPI()
 
-# ضع التوكن الخاص بك هنا
 TELEGRAM_TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# تخزين بيانات المستخدمين في الذاكرة
 user_sessions = {}
 
-# قاموس الرسائل للغتين
-LANGUAGES = {
-    "AR": {
-        "lang_set": "تم اختيار العربية. يرجى رفع ملف جدول السفينة (CSV) الآن.",
-        "file_success": "✅ تم حفظ الجدول! الآن أرسل الغواطس: [مقدمة] [منتصف] [مؤخرة] [عرض] [زاوية] [اتجاه]\n(مثال: 6.20 6.50 6.80 25 1.0 1)",
-        "result_drafts": "📊 نتائج الحسابات:\nغاطس المنتصف لجهة البحر: {mid_sea} م\nالغاطس النهائي (Mean of Means): {mean_of_means} م\n\nالآن أرسل: [إجمالي المخصومات] [الكثافة]",
-        "final_report": "🏁 تقرير مسح الغاطس النهائي:\nالغاطس النهائي: {mom} م\nالإزاحة الكلية: {disp} طن\nالكثافة: {dens}\nالوزن الصافي النهائي: {net} طن",
-        "error": "⚠️ خطأ في الإدخال! تأكد من الصيغة الصحيحة."
-    },
-    "EN": {
-        "lang_set": "English selected. Please upload the Ship Table (CSV) now.",
-        "file_success": "✅ Table saved! Now send drafts: [Fwd] [Mid] [Aft] [Breadth] [Angle] [Direction]\n(Example: 6.20 6.50 6.80 25 1.0 1)",
-        "result_drafts": "📊 Calculation Results:\nMid Sea Draft: {mid_sea} m\nMean of Means: {mean_of_means} m\n\nNow send: [Total Deductions] [Density]",
-        "final_report": "🏁 Final Draft Survey Report:\nMean of Means: {mom} m\nTotal Displacement: {disp} Tons\nDensity: {dens}\nNet Displacement: {net} Tons",
-        "error": "⚠️ Input error, please check format."
-    }
-}
-
-def send_message(chat_id, text, reply_markup=None):
+def send_message(chat_id, text):
     url = f"{BASE_URL}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown", "reply_markup": reply_markup}
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     data = await request.json()
-    if "message" not in data and "callback_query" not in data: return {"status": "ok"}
+    if "message" not in data: return {"status": "ok"}
     
-    # معالجة الأزرار (اختيار اللغة)
-    if "callback_query" in data:
-        cb = data["callback_query"]
-        chat_id = cb["message"]["chat"]["id"]
-        user_id = cb["from"]["id"]
-        lang = "AR" if cb["data"] == "LANG_AR" else "EN"
-        user_sessions[user_id] = {"language": lang, "state": "AWAITING_FILE"}
-        send_message(chat_id, LANGUAGES[lang]["lang_set"])
-        return {"status": "ok"}
-
     msg = data["message"]
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
     
-    # أمر البدء
-    if "text" in msg and msg["text"] == "/start":
-        kb = {"inline_keyboard": [[{"text": "العربية 🇸🇦", "callback_data": "LANG_AR"}, {"text": "English 🇬🇧", "callback_data": "LANG_EN"}]]}
-        send_message(chat_id, "مرحباً / Welcome. اختر لغتك:", kb)
-        return {"status": "ok"}
-    
-    session = user_sessions.get(user_id)
-    if not session: return {"status": "ok"}
-    
-    lang = session["language"]
-    
-    # استقبال الملف
-    if "document" in msg:
-        file_id = msg["document"]["file_id"]
-        path = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()["result"]["file_path"]
-        url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{path}"
-        session["tables"] = pd.read_csv(url) if msg["document"]["file_name"].endswith('.csv') else pd.read_excel(url)
-        session["state"] = "AWAITING_DRAFTS"
-        send_message(chat_id, LANGUAGES[lang]["file_success"])
+    if "text" in msg:
+        txt = msg["text"].strip()
         
-    # معالجة الحسابات
-    elif "text" in msg:
-        try:
-            txt = msg["text"].split()
-            if session["state"] == "AWAITING_DRAFTS":
-                fwd, mid, aft, b, angle, direct = map(float, txt)
-                list_corr = (b / 2) * math.tan(math.radians(angle))
-                mid_sea = mid - list_corr if direct == 1 else mid + list_corr
-                mom = (fwd + aft + (6 * (mid + mid_sea)/2)) / 8
-                session.update({"mom": mom, "state": "AWAITING_DEDUCTIONS"})
-                send_message(chat_id, LANGUAGES[lang]["result_drafts"].format(mid_sea=f"{mid_sea:.2f}", mean_of_means=f"{mom:.3f}"))
+        # 1. أمر البدء
+        if txt == "/start":
+            send_message(chat_id, "أهلاً بك. اختر لغتك بكتابة: /ar للعربية أو /en للإنجليزية")
+            return {"status": "ok"}
+        
+        # 2. اختيار اللغة (بديل الأزرار)
+        if txt in ["/ar", "/en"]:
+            lang = "AR" if txt == "/ar" else "EN"
+            user_sessions[user_id] = {"language": lang, "state": "AWAITING_FILE"}
+            msg_set = "تم اختيار العربية. يرجى الآن رفع ملف جدول السفينة (CSV)." if lang == "AR" else "English selected. Please upload the Ship Table (CSV)."
+            send_message(chat_id, msg_set)
+            return {"status": "ok"}
             
-            elif session["state"] == "AWAITING_DEDUCTIONS":
-                deduct, dens = map(float, txt)
-                raw_disp = float(np.interp(session["mom"], session["tables"]['Draft'], session["tables"]['Displacement']))
-                net = (raw_disp * (dens / 1.025)) - deduct
-                send_message(chat_id, LANGUAGES[lang]["final_report"].format(mom=f"{session['mom']:.3f}", disp=f"{raw_disp:.2f}", dens=dens, net=f"{net:.2f}"))
+        # 3. معالجة الملفات والحسابات
+        session = user_sessions.get(user_id)
+        if not session: 
+            send_message(chat_id, "يرجى البدء بـ /start")
+            return {"status": "ok"}
+            
+        if "document" in msg:
+            file_id = msg["document"]["file_id"]
+            path = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()["result"]["file_path"]
+            url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{path}"
+            session["tables"] = pd.read_csv(url)
+            session["state"] = "AWAITING_DRAFTS"
+            send_message(chat_id, "✅ تم حفظ الجدول. أرسل الآن: [مقدمة] [منتصف] [مؤخرة] [عرض] [زاوية] [اتجاه]")
+            
+        elif session["state"] == "AWAITING_DRAFTS":
+            try:
+                f, m, a, b, ang, direct = map(float, txt.split())
+                corr = (b / 2) * math.tan(math.radians(ang))
+                m_sea = m - corr if direct == 1 else m + corr
+                mom = (f + a + (6 * (m + m_sea)/2)) / 8
+                session.update({"mom": mom, "state": "AWAITING_DEDUCTIONS"})
+                send_message(chat_id, f"الغاطس النهائي: {mom:.3f}. أرسل الآن [المخصومات] [الكثافة]")
+            except: send_message(chat_id, "خطأ في الصيغة. جرب مجدداً.")
+            
+        elif session["state"] == "AWAITING_DEDUCTIONS":
+            try:
+                deduct, dens = map(float, txt.split())
+                raw = float(np.interp(session["mom"], session["tables"]['Draft'], session["tables"]['Displacement']))
+                net = (raw * (dens / 1.025)) - deduct
+                send_message(chat_id, f"الوزن الصافي: {net:.2f} طن. لمسح جديد أرسل الغواطس.")
                 session["state"] = "AWAITING_DRAFTS"
-        except:
-            send_message(chat_id, LANGUAGES[lang]["error"])
+            except: send_message(chat_id, "خطأ في الصيغة.")
             
     return {"status": "ok"}
