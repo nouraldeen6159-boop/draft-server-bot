@@ -3,8 +3,8 @@ from fastapi import FastAPI, Request
 from io import BytesIO
 
 app = FastAPI()
-TELEGRAM_TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
-BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
+BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 user_sessions = {}
 
 def send_message(chat_id, text):
@@ -18,51 +18,46 @@ async def telegram_webhook(request: Request):
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
     
-    # استقبال الملف
     if "document" in msg:
         doc = msg["document"]
         file_info = requests.get(f"{BASE_URL}/getFile?file_id={doc['file_id']}").json()
-        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info['result']['file_path']}"
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info['result']['file_path']}"
         try:
-            df = pd.read_csv(file_url) if doc["file_name"].endswith('.csv') else pd.read_excel(file_url)
+            df = pd.read_csv(file_url)
             df.columns = df.columns.str.strip()
             user_sessions[user_id] = {"tables": df, "state": "AWAITING_DRAFTS"}
-            send_message(chat_id, "✅ تم حفظ الجدول. أرسل الآن:\n`[Fwd] [Mid] [Aft] [Breadth] [Angle] [Direction]`")
-        except: send_message(chat_id, "❌ خطأ في قراءة الملف.")
+            send_message(chat_id, "✅ تم حفظ الجدول. أرسل الآن الغواطس والبيانات.")
+        except: send_message(chat_id, "❌ خطأ في الملف.")
         return {"status": "ok"}
 
-    # المعالجة النصية
     if "text" in msg:
-        text = msg["text"].strip().replace(',', '.')
-        if text == "/start":
-            user_sessions[user_id] = {}
-            send_message(chat_id, "⚓️ أهلاً بك. ارفع ملف CSV/Excel الخاص بجدول السفينة.")
-            return {"status": "ok"}
-            
+        txt = msg["text"].strip().replace(',', '.')
         sess = user_sessions.get(user_id)
-        if not sess or "tables" not in sess: return {"status": "ok"}
         
         try:
-            parts = [float(x) for x in text.split()]
+            parts = [float(x) for x in txt.split()]
             if sess["state"] == "AWAITING_DRAFTS" and len(parts) == 6:
                 f, m, a, b, ang, direct = parts
                 m_sea = m - ((b/2)*math.tan(math.radians(ang))) if direct == 1 else m + ((b/2)*math.tan(math.radians(ang)))
                 
                 mid_theory = (f + a) / 2
                 diff = m_sea - mid_theory
-                status = "Neutral" if abs(diff) <= 0.02 else ("Hogging" if diff > 0 else "Sagging")
+                diff_cm = diff * 100 # تحويل للسنتمتر
+                
+                # الحالة مع الرقم
+                if abs(diff) <= 0.02: status = f"Neutral ({abs(diff_cm):.1f} cm)"
+                else: status = f"{'Hogging' if diff > 0 else 'Sagging'} ({abs(diff_cm):.1f} cm)"
                 
                 mom = (f + a + (6 * ((m + m_sea) / 2))) / 8
                 sess.update({"mom": mom, "state": "DEDUCTS", "status": status})
-                send_message(chat_id, f"📊 الغاطس النهائي: {mom:.3f}\n🏗 الوضع: {status}\n📥 أرسل [المخصومات] [الكثافة]")
+                send_message(chat_id, f"📊 الغاطس: {mom:.3f}\n🏗 الوضع: {status}\n📥 أرسل [المخصومات] [الكثافة]")
                 
             elif sess["state"] == "DEDUCTS" and len(parts) == 2:
                 deduct, dens = parts
                 df = sess["tables"]
                 raw = float(np.interp(sess["mom"], df['Draft'], df['Displacement']))
                 net = (raw * (dens / 1.025)) - deduct
-                send_message(chat_id, f"🏁 **التقرير النهائي**\nالغاطس: {sess['mom']:.3f}\nالوضع: {sess['status']}\nالوزن الصافي: {net:.2f} طن.")
+                send_message(chat_id, f"🏁 **التقرير**\nالغاطس: {sess['mom']:.3f}\nالوضع: {sess['status']}\nالوزن الصافي: {net:.2f} طن.")
                 sess["state"] = "AWAITING_DRAFTS"
         except: send_message(chat_id, "⚠️ خطأ في الصيغة!")
-            
     return {"status": "ok"}
