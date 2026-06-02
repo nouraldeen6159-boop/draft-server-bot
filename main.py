@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 app = FastAPI()
 
 # جلب التوكن السري من إعدادات البيئة (Environment Variables)
-TELEGRAM_TOKEN = os.getenv("8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU")
+TELEGRAM_TOKEN = ("8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU")
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ذاكرة مؤقتة لتخزين بيانات السفن (للإنتاج التجاري يفضل ربطها بقاعدة بيانات كـ Supabase)
