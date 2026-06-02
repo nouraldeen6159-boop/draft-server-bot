@@ -7,11 +7,11 @@ from fastapi import FastAPI, Request
 
 app = FastAPI()
 
-# جلب التوكن السري من إعدادات البيئة (Environment Variables)
-TELEGRAM_TOKEN = ("8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU")
+# توكن البوت الخاص بك
+TELEGRAM_TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# ذاكرة مؤقتة لتخزين بيانات السفن (للإنتاج التجاري يفضل ربطها بقاعدة بيانات كـ Supabase)
+# ذاكرة مؤفتة لتخزين جلسات المستخدمين
 user_sessions = {}
 
 def send_message(chat_id, text):
@@ -25,12 +25,9 @@ def send_message(chat_id, text):
 
 def interpolate_displacement(draft, df_tables):
     """البحث في جدول السفينة وجلب الإزاحة عبر الاستيفاء الخطي (Linear Interpolation)"""
-    # ترتيب الجدول بناءً على الغاطس لضمان دقة الحساب
     df_sorted = df_tables.sort_values(by='Draft')
     drafts = df_sorted['Draft'].values
     displacements = df_sorted['Displacement'].values
-    
-    # حساب القيمة الدقيقة المقابلة للكسور
     return float(np.interp(draft, drafts, displacements))
 
 @app.post("/webhook")
@@ -44,28 +41,23 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     user_id = message["from"]["id"]
     
-    # ---------------------------------------------------------------
     # 1. استقبال ملف جدول السفينة (Excel / CSV)
-    # ---------------------------------------------------------------
     if "document" in message:
         doc = message["document"]
         if doc["file_name"].endswith(('.xlsx', '.csv')):
             file_id = doc["file_id"]
             
-            # جلب رابط تحميل الملف من خوادم تليجرام
             file_info = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()
             if "result" in file_info:
                 file_path = file_info["result"]["file_path"]
                 file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
                 
                 try:
-                    # قراءة الجدول وحفظه في جلسة المستخدم وتحويل الحالة لانتظار الغواطس
                     if doc["file_name"].endswith('.xlsx'):
                         df = pd.read_excel(file_url)
                     else:
                         df = pd.read_csv(file_url)
                         
-                    # التحقق من وجود الأعمدة المطلوبة
                     if 'Draft' not in df.columns or 'Displacement' not in df.columns:
                         send_message(chat_id, "❌ خطأ في الملف! تأكد من أن أسماء الأعمدة في الجدول هي تماماً: `Draft` و `Displacement`.")
                         return {"status": "ok"}
@@ -76,13 +68,10 @@ async def telegram_webhook(request: Request):
                     send_message(chat_id, "❌ فشل في قراءة الملف. تأكد من صيغته وسلامة البيانات داخله.")
             return {"status": "ok"}
 
-    # ---------------------------------------------------------------
     # 2. استقبال النصوص والأوامر والمراحل الحسابية
-    # ---------------------------------------------------------------
     if "text" in message:
         text = message["text"].strip()
         
-        # أمر البداية
         if text == "/start":
             send_message(chat_id, "⚓️ **مرحباً بك في مساعد مسح الغاطس الذكي (Draft Survey Bot).**\n\nخطوتنا الأولى هي رفع ملف الإكسيل أو CSV الخاص بجدول سفينتك المائي.\n\n⚠️ *ملاحظة:* تأكد أن الجدول يحتوي على عمودين رئيسيين بالإنجليزية باسم:\n1. `Draft` (للغاطس)\n2. `Displacement` (للإزاحة)")
             return {"status": "ok"}
@@ -92,7 +81,7 @@ async def telegram_webhook(request: Request):
             send_message(chat_id, "⚠️ ليس لديك جلسة نشطة. الرجاء إرسال `/start` وإعادة رفع ملف جدول السفينة أولاً.")
             return {"status": "ok"}
             
-        # المرحلة الأولى: استقبال الغواطس وحساب الجهة الأخرى والمتوسط الحسابي
+        # المرحلة الأولى: حساب الغواطس والوصول للـ Mean of Means
         if session["state"] == "AWAITING_DRAFTS":
             try:
                 parts = text.split()
@@ -104,36 +93,29 @@ async def telegram_webhook(request: Request):
                 aft_dock = float(parts[2])
                 breadth = float(parts[3])
                 list_angle = float(parts[4])
-                direction = int(parts[5]) # 1 = نحو الرصيف، 2 = نحو البحر
+                direction = int(parts[5])
                 
-                # حساب مقدار التعديل بسبب زاوية الميلان (List Correction)
                 list_corr = (breadth / 2) * math.tan(math.radians(list_angle))
                 
-                # تحديد إشارة الحساب لجهة البحر بناءً على اتجاه الميلان
                 if direction == 1:
-                    # السفينة تميل نحو الرصيف -> جهة البحر مرتفعة (الغاطس أقل)
                     mid_sea = mid_dock - (2 * list_corr)
-                    fwd_sea = fwd_dock - (2 * list_corr) # افتراض تأثير الميل الموحد هندسياً
+                    fwd_sea = fwd_dock - (2 * list_corr)
                     aft_sea = aft_dock - (2 * list_corr)
                 elif direction == 2:
-                    # السفينة تميل نحو البحر -> جهة البحر منخفضة (الغاطس أكبر)
                     mid_sea = mid_dock + (2 * list_corr)
                     fwd_sea = fwd_dock + (2 * list_corr)
                     aft_sea = aft_dock + (2 * list_corr)
                 else:
                     raise ValueError
                 
-                # حساب المتوسطات الحسابية الدقيقة للجهتين (Mean Drafts)
                 mean_fwd = (fwd_dock + fwd_sea) / 2
                 mean_mid = (mid_dock + mid_sea) / 2
                 mean_aft = (aft_dock + aft_sea) / 2
                 
-                # حساب الغاطس النهائي المعتمد بحرياً معادلة ربع المتوسطات (Mean of Means)
                 mean_of_means = (mean_fwd + mean_aft + (6 * mean_mid)) / 8
                 
-                # حفظ قيمة الـ Mean of Means في الجلسة ونقل الحالة للمرحلة الأخيرة
                 session["mean_of_means"] = mean_of_means
-                session["state"] = "AWAITING_DEDUCTIONS"
+                session["state"] = "AWAITING_DEDUCTIONS_AND_DENSITY"
                 
                 response_text = (
                     f"📊 **نتائج حساب الغواطس لجهة البحر المجهولة:**\n\n"
@@ -142,8 +124,9 @@ async def telegram_webhook(request: Request):
                     f" ├ المنتصف (Mid Sea): `{mid_sea:.2f} m`\n"
                     f" └ المؤخرة (Aft Sea): `{aft_sea:.2f} m`\n\n"
                     f"🧮 **الغاطس النهائي (Mean of Means):** `{mean_of_means:.3f} m`\n\n"
-                    f"📥 **الخطوة الأخيرة:** الرجاء إرسال إجمالي الأوزان المراد طرحها بالطن (مجموع: المياه العذبة + البالاست + الوقود والزيوت... إلخ).\n"
-                    f" *مثال: 1420*"
+                    f"📥 **الخطوة التالية (الأوزان والكثافة):** الرجاء إرسال إجمالي المخصومات (بالطن) متبوعاً بكثافة المياه المقاسة يفصلهما مسافة كالتالي:\n"
+                    f"`[إجمالي_المخصومات] [كثافة_المياه]`\n\n"
+                    f"💡 *مثال:* `1420 1.018`"
                 )
                 send_message(chat_id, response_text)
                 
@@ -151,36 +134,48 @@ async def telegram_webhook(request: Request):
                 send_message(chat_id, "⚠️ صيغة الإدخال خاطئة! الرجاء إرسال 6 قيم تفصل بينها مسافات تماماً كالمثال:\n`6.20 6.50 6.80 32 1.5 1`")
             return {"status": "ok"}
             
-        # المرحلة الثانية: استقبال المخصومات وحساب الوزن الصافي النهائي
-        if session["state"] == "AWAITING_DEDUCTIONS":
+        # المرحلة الثانية المتطورة: استقبال المخصومات والكثافة وحساب تصحيح الكثافة والوزن الصافي
+        if session["state"] == "AWAITING_DEDUCTIONS_AND_DENSITY":
             try:
-                total_deductions = float(text)
+                parts = text.split()
+                if len(parts) != 2:
+                    raise ValueError
+                    
+                total_deductions = float(parts[0])
+                measured_density = float(parts[1])
+                
                 mean_of_means = session["mean_of_means"]
                 df_tables = session["tables"]
                 
-                # استخراج الإزاحة الكلية من جدول الإكسيل عبر دالة الاستيفاء الخطي
-                displacement = interpolate_displacement(mean_of_means, df_tables)
+                # 1. استخراج الإزاحة المبدئية من الجدول
+                raw_displacement = interpolate_displacement(mean_of_means, df_tables)
                 
-                # حساب الإزاحة الصافية المصححة (Corrected Displacement)
-                corrected_displacement = displacement - total_deductions
+                # 2. تطبيق معادلة تصحيح الكثافة المعتمدة بحرياً (المقارنة مع الكثافة القياسية 1.025)
+                corrected_by_density = raw_displacement * (measured_density / 1.025)
+                
+                # 3. حساب الإزاحة الصافية النهائية بعد طرح المخصومات
+                final_net_displacement = corrected_by_density - total_deductions
                 
                 final_report = (
-                    f"🏁 **تقرير مسح الغاطس النهائي (Draft Survey Report)**\n\n"
+                    f"🏁 **تقرير مسح الغاطس النهائي الشامل (Draft Survey Report)**\n\n"
                     f"📏 الغاطس الحسابي المعتمد: `{mean_of_means:.3f} m`\n"
-                    f"⚓️ الإزاحة الإجمالية (من الجدول): `{displacement:.2f} Tons`\n"
-                    f"📉 إجمالي الأوزان المطروحة: `{total_deductions:.2f} Tons`\n"
+                    f"⚓️ الإزاحة الكلية (من الجدول الافتراضي): `{raw_displacement:.2f} Tons`\n"
+                    f"🧪 كثافة المياه المقاسة: `{measured_density:.3f} mt/m³`\n"
+                    f"⚖️ **الإزاحة المصححة بناءً على الكثافة:** `{corrected_by_density:.2f} Tons`\n"
+                    f"📉 إجمالي الأوزان المطروحة (Deductions): `{total_deductions:.2f} Tons`\n"
                     f"──────────────────────\n"
-                    f"⚖️ **الوزن الصافي المعدل (Corrected Displacement):**\n"
-                    f"`{corrected_displacement:.2f} Tons`\n\n"
-                    f"🔄 للقيام بمسح جديد على نفس السفينة، أرسل الغواطس مباشرة. لتغيير السفينة، أرفع ملف إكسيل جديد."
+                    f"📦 **الوزن الصافي المعدل النهائي (Net Displacement):**\n"
+                    f"`{final_net_displacement:.2f} Tons`\n\n"
+                    f"🔄 للقيام بمسح جديد على نفس السفينة، أرسل الغواطس مباشرة. لتغيير السفينة، ارفع ملف إكسيل جديد."
                 )
                 send_message(chat_id, final_report)
                 
-                # إعادة الحالة لاستقبال غواطس جديدة لنفس السفينة المرفوعة دون الحاجة لرفع الإكسيل مجدداً
+                # العودة للمرحلة الأولى لاستقبال غواطس جديدة لنفس السفينة عند الحاجة
                 session["state"] = "AWAITING_DRAFTS"
                 
             except Exception as e:
-                send_message(chat_id, "⚠️ خطأ! الرجاء إرسال قيمة عددية صحيحة لإجمالي الأوزان المراد طرحها.")
+                send_message(chat_id, "⚠️ صيغة الإدخال خاطئة! الرجاء إرسال قيمتين (المخصومات ثم الكثافة) تفصل بينهما مسافة كالمثال:\n`1420 1.018`")
             return {"status": "ok"}
 
     return {"status": "ok"}
+
