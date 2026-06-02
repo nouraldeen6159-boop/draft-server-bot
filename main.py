@@ -18,6 +18,7 @@ async def telegram_webhook(request: Request):
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
     
+    # 1. معالجة الملف
     if "document" in msg:
         doc = msg["document"]
         file_info = requests.get(f"{BASE_URL}/getFile?file_id={doc['file_id']}").json()
@@ -26,38 +27,47 @@ async def telegram_webhook(request: Request):
             df = pd.read_csv(file_url)
             df.columns = df.columns.str.strip()
             user_sessions[user_id] = {"tables": df, "state": "AWAITING_DRAFTS"}
-            send_message(chat_id, "✅ تم حفظ الجدول. أرسل الآن الغواطس والبيانات.")
+            send_message(chat_id, "✅ تم حفظ الجدول. أرسل الآن الغواطس الستة (مسافات فقط):")
         except: send_message(chat_id, "❌ خطأ في الملف.")
         return {"status": "ok"}
 
+    # 2. المعالجة النصية
     if "text" in msg:
-        txt = msg["text"].strip().replace(',', '.')
+        # تنظيف النص من أي فواصل غير المسافات
+        txt = msg["text"].strip().replace(',', ' ').replace('  ', ' ')
         sess = user_sessions.get(user_id)
+        if not sess: return {"status": "ok"}
         
         try:
             parts = [float(x) for x in txt.split()]
+            
+            # حالة الغواطس
             if sess["state"] == "AWAITING_DRAFTS" and len(parts) == 6:
                 f, m, a, b, ang, direct = parts
-                m_sea = m - ((b/2)*math.tan(math.radians(ang))) if direct == 1 else m + ((b/2)*math.tan(math.radians(ang)))
+                # تصحيح الميل
+                corr = (b / 2) * math.tan(math.radians(ang))
+                m_sea = m - corr if direct == 1 else m + corr
                 
+                # حساب الـ Hogging/Sagging
                 mid_theory = (f + a) / 2
                 diff = m_sea - mid_theory
-                diff_cm = diff * 100 # تحويل للسنتمتر
-                
-                # الحالة مع الرقم
-                if abs(diff) <= 0.02: status = f"Neutral ({abs(diff_cm):.1f} cm)"
-                else: status = f"{'Hogging' if diff > 0 else 'Sagging'} ({abs(diff_cm):.1f} cm)"
+                status = f"{'Hogging' if diff > 0 else 'Sagging'} ({abs(diff*100):.1f} cm)" if abs(diff) > 0.02 else "Neutral"
                 
                 mom = (f + a + (6 * ((m + m_sea) / 2))) / 8
                 sess.update({"mom": mom, "state": "DEDUCTS", "status": status})
-                send_message(chat_id, f"📊 الغاطس: {mom:.3f}\n🏗 الوضع: {status}\n📥 أرسل [المخصومات] [الكثافة]")
+                send_message(chat_id, f"📊 الغاطس: {mom:.3f}\n🏗 الوضع: {status}\n📥 أرسل: [المخصومات] [الكثافة]")
                 
+            # حالة المخصومات
             elif sess["state"] == "DEDUCTS" and len(parts) == 2:
                 deduct, dens = parts
                 df = sess["tables"]
                 raw = float(np.interp(sess["mom"], df['Draft'], df['Displacement']))
                 net = (raw * (dens / 1.025)) - deduct
-                send_message(chat_id, f"🏁 **التقرير**\nالغاطس: {sess['mom']:.3f}\nالوضع: {sess['status']}\nالوزن الصافي: {net:.2f} طن.")
+                send_message(chat_id, f"🏁 **التقرير**\nالغاطس: {sess['mom']:.3f}\nالوضع: {sess['status']}\nالصافي: {net:.2f} طن.")
                 sess["state"] = "AWAITING_DRAFTS"
-        except: send_message(chat_id, "⚠️ خطأ في الصيغة!")
+            else:
+                send_message(chat_id, f"⚠️ عدد القيم غير صحيح: {len(parts)} (المطلوب 6 للغواطس أو 2 للمخصومات).")
+        except: 
+            send_message(chat_id, "⚠️ خطأ في الصيغة! تأكد من إرسال أرقام فقط.")
+            
     return {"status": "ok"}
