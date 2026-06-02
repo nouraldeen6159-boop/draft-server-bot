@@ -20,20 +20,19 @@ async def webhook(request: Request):
     if "text" in msg:
         txt = msg["text"].strip()
         
-        # 1. نظام البدء واللغات
+        # 1. البدء واختيار اللغة
         if txt == "/start":
             sessions[user_id] = {"state": "LANG"}
-            send_msg(chat_id, "أهلاً بك. أرسل /ar للعربية أو /en للإنجليزية\nWelcome. Send /ar for Arabic or /en for English")
+            send_msg(chat_id, "أهلاً بك. أرسل /ar للعربية أو /en للإنجليزية")
             return {"status": "ok"}
         
         if txt in ["/ar", "/en"]:
-            lang = "AR" if txt == "/ar" else "EN"
-            sessions[user_id] = {"lang": lang, "state": "FILE"}
-            msg_res = "تم اختيار العربية. يرجى رفع ملف CSV الآن." if lang == "AR" else "English selected. Please upload CSV file."
+            sessions[user_id] = {"lang": txt, "state": "FILE"}
+            msg_res = "تم اختيار العربية. يرجى رفع ملف الـ CSV." if txt == "/ar" else "English selected. Please upload the CSV file."
             send_msg(chat_id, msg_res)
             return {"status": "ok"}
             
-        # 2. معالجة الحسابات
+        # 2. الحسابات
         sess = sessions.get(user_id)
         if not sess or "tables" not in sess: return {"status": "ok"}
         
@@ -47,19 +46,25 @@ async def webhook(request: Request):
                 m_sea = m - corr if direct == 1 else m + corr
                 mom = (f + a + (6 * (m + m_sea)/2)) / 8
                 sess.update({"mom": mom, "state": "DEDUCTS"})
-                res = f"الغاطس المكافئ: {mom:.3f}. أرسل: [المخصومات] [الكثافة]" if sess["lang"] == "AR" else f"Mean of Means: {mom:.3f}. Send: [Deductions] [Density]"
-                send_msg(chat_id, res)
+                
+                if sess["lang"] == "/ar":
+                    send_msg(chat_id, f"الغاطس المكافئ: {mom:.3f}\nأرسل الآن: [المخصومات] [الكثافة]")
+                else:
+                    send_msg(chat_id, f"Mean of Means: {mom:.3f}\nSend now: [Deductions] [Density]")
                 
             elif sess["state"] == "DEDUCTS" and len(vals) == 2:
                 deduct, dens = vals
                 df = sess["tables"]
                 raw = float(np.interp(sess["mom"], df['Draft'], df['Displacement']))
                 net = (raw * (dens / 1.025)) - deduct
-                res = f"الوزن الصافي للبضاعة: {net:.2f} طن." if sess["lang"] == "AR" else f"Net Cargo Weight: {net:.2f} Tons."
-                send_msg(chat_id, res)
+                
+                if sess["lang"] == "/ar":
+                    send_msg(chat_id, f"الوزن الصافي للبضاعة: {net:.2f} طن.")
+                else:
+                    send_msg(chat_id, f"Net Cargo Weight: {net:.2f} Tons.")
                 sess["state"] = "DRAFTS"
         except:
-            send_msg(chat_id, "⚠️ خطأ في الصيغة / Input Error")
+            send_msg(chat_id, "⚠️ خطأ في المدخلات / Input Error")
             
     # 3. معالجة الملف
     elif "document" in msg:
@@ -70,8 +75,9 @@ async def webhook(request: Request):
             resp = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}")
             sess["tables"] = pd.read_csv(BytesIO(resp.content))
             sess["state"] = "DRAFTS"
-            res = "✅ تم حفظ الجدول! أرسل الآن الغواطس." if sess["lang"] == "AR" else "✅ Table saved! Now send Drafts."
+            res = "✅ تم حفظ الجدول." if sess["lang"] == "/ar" else "✅ Table saved."
             send_msg(chat_id, res)
             
     return {"status": "ok"}
+
 
