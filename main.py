@@ -4,7 +4,6 @@ from fastapi import FastAPI, Request
 
 app = FastAPI()
 TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
-# تخزين مؤقت للجلسات والبيانات
 sessions = {}
 
 def send_msg(chat_id, text):
@@ -18,45 +17,61 @@ async def webhook(request: Request):
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
     
-    # معالجة النصوص
     if "text" in msg:
         txt = msg["text"].strip()
+        
+        # 1. نظام البدء واللغات
         if txt == "/start":
             sessions[user_id] = {"state": "LANG"}
-            send_msg(chat_id, "أهلاً بك. أرسل /ar للعربية أو /en للإنجليزية")
-        elif txt in ["/ar", "/en"]:
-            sessions[user_id] = {"lang": txt, "state": "FILE"}
-            send_msg(chat_id, "الآن، ارفع ملف CSV الخاص بالسفينة (Draft, Displacement)")
-        elif "tables" in sessions.get(user_id, {}) and sessions[user_id]["state"] == "DRAFTS":
-            try:
-                # معالجة الغواطس: [مقدمة] [منتصف] [مؤخرة] [عرض] [زاوية] [اتجاه]
-                vals = [float(x.replace(',', '.')) for x in txt.split()]
+            send_msg(chat_id, "أهلاً بك. أرسل /ar للعربية أو /en للإنجليزية\nWelcome. Send /ar for Arabic or /en for English")
+            return {"status": "ok"}
+        
+        if txt in ["/ar", "/en"]:
+            lang = "AR" if txt == "/ar" else "EN"
+            sessions[user_id] = {"lang": lang, "state": "FILE"}
+            msg_res = "تم اختيار العربية. يرجى رفع ملف CSV الآن." if lang == "AR" else "English selected. Please upload CSV file."
+            send_msg(chat_id, msg_res)
+            return {"status": "ok"}
+            
+        # 2. معالجة الحسابات
+        sess = sessions.get(user_id)
+        if not sess or "tables" not in sess: return {"status": "ok"}
+        
+        try:
+            txt_clean = txt.replace(',', '.')
+            vals = [float(x) for x in txt_clean.split()]
+            
+            if sess["state"] == "DRAFTS" and len(vals) == 6:
                 f, m, a, b, ang, direct = vals
                 corr = (b / 2) * math.tan(math.radians(ang))
                 m_sea = m - corr if direct == 1 else m + corr
                 mom = (f + a + (6 * (m + m_sea)/2)) / 8
-                sessions[user_id].update({"mom": mom, "state": "DEDUCTS"})
-                send_msg(chat_id, f"الغاطس المكافئ: {mom:.3f}\nالآن أرسل: [المخصومات] [الكثافة]")
-            except: send_msg(chat_id, "خطأ في البيانات. أرسل الأرقام الستة مفصولة بمسافات.")
-        elif sessions.get(user_id, {}).get("state") == "DEDUCTS":
-            try:
-                deduct, dens = [float(x.replace(',', '.')) for x in txt.split()]
-                df = sessions[user_id]["tables"]
-                raw = float(np.interp(sessions[user_id]["mom"], df['Draft'], df['Displacement']))
+                sess.update({"mom": mom, "state": "DEDUCTS"})
+                res = f"الغاطس المكافئ: {mom:.3f}. أرسل: [المخصومات] [الكثافة]" if sess["lang"] == "AR" else f"Mean of Means: {mom:.3f}. Send: [Deductions] [Density]"
+                send_msg(chat_id, res)
+                
+            elif sess["state"] == "DEDUCTS" and len(vals) == 2:
+                deduct, dens = vals
+                df = sess["tables"]
+                raw = float(np.interp(sess["mom"], df['Draft'], df['Displacement']))
                 net = (raw * (dens / 1.025)) - deduct
-                send_msg(chat_id, f"الوزن الصافي للبضاعة: {net:.2f} طن.")
-                sessions[user_id]["state"] = "DRAFTS"
-            except: send_msg(chat_id, "خطأ في الصيغة. أرسل رقمين فقط.")
+                res = f"الوزن الصافي للبضاعة: {net:.2f} طن." if sess["lang"] == "AR" else f"Net Cargo Weight: {net:.2f} Tons."
+                send_msg(chat_id, res)
+                sess["state"] = "DRAFTS"
+        except:
+            send_msg(chat_id, "⚠️ خطأ في الصيغة / Input Error")
             
-    # معالجة الملفات
+    # 3. معالجة الملف
     elif "document" in msg:
-        if user_id in sessions:
+        sess = sessions.get(user_id)
+        if sess:
             file_id = msg["document"]["file_id"]
             path = requests.get(f"https://api.telegram.org/bot{TOKEN}/getFile?file_id={file_id}").json()["result"]["file_path"]
             resp = requests.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}")
-            sessions[user_id]["tables"] = pd.read_csv(BytesIO(resp.content))
-            sessions[user_id]["state"] = "DRAFTS"
-            send_msg(chat_id, "✅ تم حفظ الجدول! أرسل الآن الغواطس.")
+            sess["tables"] = pd.read_csv(BytesIO(resp.content))
+            sess["state"] = "DRAFTS"
+            res = "✅ تم حفظ الجدول! أرسل الآن الغواطس." if sess["lang"] == "AR" else "✅ Table saved! Now send Drafts."
+            send_msg(chat_id, res)
             
     return {"status": "ok"}
 
