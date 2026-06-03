@@ -1,6 +1,5 @@
-import requests
+import requests, os, re
 from fastapi import FastAPI, Request
-import os
 
 app = FastAPI()
 TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
@@ -8,7 +7,6 @@ BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 ADMIN_ID = 8684618304
 USERS_FILE = "allowed_users.txt"
 
-# دالة لقراءة المستخدمين
 def get_allowed():
     allowed = {ADMIN_ID}
     if os.path.exists(USERS_FILE):
@@ -17,7 +15,6 @@ def get_allowed():
                 if line.strip().isdigit(): allowed.add(int(line.strip()))
     return list(allowed)
 
-# دالة لحفظ المستخدمين
 def save_users(users_list):
     with open(USERS_FILE, "w") as f:
         for u in set(users_list): f.write(f"{u}\n")
@@ -26,48 +23,48 @@ def save_users(users_list):
 async def webhook(request: Request):
     data = await request.json()
     
-    # 1. التعامل مع الأزرار
+    # تحديد المستخدم
+    if "callback_query" in data:
+        user_id = data["callback_query"]["from"]["id"]
+        chat_id = data["callback_query"]["message"]["chat"]["id"]
+    elif "message" in data:
+        user_id = data["message"]["from"]["id"]
+        chat_id = data["message"]["chat"]["id"]
+    else:
+        return {"status": "ok"}
+
+    # 1. الحماية: التأكد من الصلاحية
+    if user_id not in get_allowed():
+        requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": "⛔ غير مصرح لك باستخدام البوت."})
+        return {"status": "ok"}
+
+    # 2. التعامل مع الأزرار
     if "callback_query" in data:
         cb = data["callback_query"]
-        chat_id = cb["message"]["chat"]["id"]
         action = cb["data"]
         
-        if action == "draft":
-            text = "قم برفع ملف الـ CSV/Excel الآن."
-        elif action == "list_users":
-            text = f"📋 قائمة المستخدمين المصرح لهم:\n`{get_allowed()}`"
-        elif action == "add":
-            text = "لإضافة مستخدم، أرسل: /add [ID]"
-        elif action == "del":
-            text = "لحذف مستخدم، أرسل: /del [ID]"
-        else:
-            text = "تم الضغط على: " + action
-            
+        if action == "draft": text = "يرجى رفع ملف الـ CSV/Excel."
+        elif action == "list_users": text = f"📋 المصرح لهم:\n`{get_allowed()}`"
+        elif action == "add": text = "أرسل: /add [ID]"
+        elif action == "del": text = "أرسل: /del [ID]"
+        else: text = "تمت العملية."
+        
         requests.post(f"{BASE_URL}/answerCallbackQuery", json={"callback_query_id": cb["id"]})
         requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
         return {"status": "ok"}
 
-    # 2. التعامل مع الرسائل
+    # 3. التعامل مع الرسائل
     if "message" in data:
-        msg = data["message"]
-        chat_id = msg["chat"]["id"]
-        text = msg.get("text", "")
+        text = data["message"].get("text", "")
         
         if text == "/start":
-            menu = {
-                "inline_keyboard": [
-                    [{"text": "📊 درافت سيرفي", "callback_data": "draft"}],
-                    [{"text": "📋 عرض المستخدمين", "callback_data": "list_users"}],
-                    [{"text": "➕ إضافة", "callback_data": "add"}, {"text": "➖ حذف", "callback_data": "del"}]
-                ]
-            }
-            requests.post(f"{BASE_URL}/sendMessage", json={
-                "chat_id": chat_id, 
-                "text": "أهلاً يا قبطان، اختر العملية:", 
-                "reply_markup": menu
-            })
+            menu = {"inline_keyboard": [
+                [{"text": "📊 درافت سيرفي", "callback_data": "draft"}],
+                [{"text": "📋 قائمة المستخدمين", "callback_data": "list_users"}],
+                [{"text": "➕ إضافة", "callback_data": "add"}, {"text": "➖ حذف", "callback_data": "del"}]
+            ]}
+            requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": "أهلاً قبطان:", "reply_markup": menu})
         
-        # منطق الإضافة (يدعم /add [ID])
         elif text.startswith("/add "):
             new_id = int(text.split()[1])
             users = get_allowed()
@@ -76,7 +73,6 @@ async def webhook(request: Request):
                 save_users(users)
                 requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": f"✅ تمت إضافة {new_id}"})
                 
-        # منطق الحذف (يدعم /del [ID])
         elif text.startswith("/del "):
             del_id = int(text.split()[1])
             users = get_allowed()
@@ -86,4 +82,5 @@ async def webhook(request: Request):
                 requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": f"✅ تمت حذف {del_id}"})
 
     return {"status": "ok"}
+
 
