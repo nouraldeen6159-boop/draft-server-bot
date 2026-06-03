@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 app = FastAPI()
 TOKEN = "8884546097:AAFDZnjOh35NQNgTKlQ1FjqxdlmJGl6n8VU"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
-ADMIN_ID = 7101808941
+ADMIN_ID = 8684618304
 USERS_FILE = "allowed_users.txt"
 user_sessions = {}
 
