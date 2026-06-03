@@ -1,4 +1,4 @@
-import requests, os, re
+import requests, os
 from fastapi import FastAPI, Request
 
 app = FastAPI()
@@ -23,49 +23,55 @@ def save_users(users_list):
 async def webhook(request: Request):
     data = await request.json()
     
-    # تحديد المستخدم
+    # تحديد الهوية
     if "callback_query" in data:
         user_id = data["callback_query"]["from"]["id"]
         chat_id = data["callback_query"]["message"]["chat"]["id"]
     elif "message" in data:
         user_id = data["message"]["from"]["id"]
         chat_id = data["message"]["chat"]["id"]
-    else:
-        return {"status": "ok"}
+    else: return {"status": "ok"}
 
-    # 1. الحماية: التأكد من الصلاحية
+    # 1. الحماية الصارمة
     if user_id not in get_allowed():
-        requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": "⛔ غير مصرح لك باستخدام البوت."})
+        requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": "⛔ غير مصرح لك."})
         return {"status": "ok"}
 
-    # 2. التعامل مع الأزرار
+    # 2. منطق الأزرار (مع حماية إضافية)
     if "callback_query" in data:
         cb = data["callback_query"]
         action = cb["data"]
         
+        # حماية إضافية لمنع المستخدمين من تنفيذ أوامر الأدمين
+        if action in ["list_users", "add", "del"] and user_id != ADMIN_ID:
+            requests.post(f"{BASE_URL}/answerCallbackQuery", json={"callback_query_id": cb["id"], "text": "⛔ صلاحيات أدمين فقط!"})
+            return {"status": "ok"}
+
         if action == "draft": text = "يرجى رفع ملف الـ CSV/Excel."
         elif action == "list_users": text = f"📋 المصرح لهم:\n`{get_allowed()}`"
         elif action == "add": text = "أرسل: /add [ID]"
         elif action == "del": text = "أرسل: /del [ID]"
-        else: text = "تمت العملية."
         
         requests.post(f"{BASE_URL}/answerCallbackQuery", json={"callback_query_id": cb["id"]})
         requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
         return {"status": "ok"}
 
-    # 3. التعامل مع الرسائل
+    # 3. منطق الرسائل (لوحات التحكم المنفصلة)
     if "message" in data:
         text = data["message"].get("text", "")
-        
         if text == "/start":
-            menu = {"inline_keyboard": [
-                [{"text": "📊 درافت سيرفي", "callback_data": "draft"}],
-                [{"text": "📋 قائمة المستخدمين", "callback_data": "list_users"}],
-                [{"text": "➕ إضافة", "callback_data": "add"}, {"text": "➖ حذف", "callback_data": "del"}]
-            ]}
-            requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": "أهلاً قبطان:", "reply_markup": menu})
+            is_admin = (user_id == ADMIN_ID)
+            menu = {
+                "inline_keyboard": [
+                    [{"text": "📊 درافت سيرفي", "callback_data": "draft"}]
+                ] + ([
+                    [{"text": "📋 قائمة المستخدمين", "callback_data": "list_users"}],
+                    [{"text": "➕ إضافة", "callback_data": "add"}, {"text": "➖ حذف", "callback_data": "del"}]
+                ] if is_admin else [])
+            }
+            requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": "أهلاً يا قبطان، اختر العملية:", "reply_markup": menu})
         
-        elif text.startswith("/add "):
+        elif text.startswith("/add ") and user_id == ADMIN_ID:
             new_id = int(text.split()[1])
             users = get_allowed()
             if new_id not in users:
@@ -73,7 +79,7 @@ async def webhook(request: Request):
                 save_users(users)
                 requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": f"✅ تمت إضافة {new_id}"})
                 
-        elif text.startswith("/del "):
+        elif text.startswith("/del ") and user_id == ADMIN_ID:
             del_id = int(text.split()[1])
             users = get_allowed()
             if del_id in users and del_id != ADMIN_ID:
@@ -82,5 +88,4 @@ async def webhook(request: Request):
                 requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": f"✅ تمت حذف {del_id}"})
 
     return {"status": "ok"}
-
 
